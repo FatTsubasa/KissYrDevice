@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">AiFat.KissYrDevice</string>
+    <string name="accessibility_description">用于通过面部动作触发系统截屏。</string>
+</resources>
