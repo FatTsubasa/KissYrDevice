@@ -64,8 +64,17 @@ class MouthOverlayService : LifecycleService(), ViewModelStoreOwner, SavedStateR
         cameraExecutor = Executors.newSingleThreadExecutor()
         
         triggerManager = TriggerManager(this)
-        // Default enable screenshot in service
-        triggerManager.addTrigger(ScreenshotTrigger())
+        
+        // Read the switch state from SharedPreferences
+        val sharedPrefs = getSharedPreferences("KissYrSettings", Context.MODE_PRIVATE)
+        val isScreenshotEnabled = sharedPrefs.getBoolean("screenshot_enabled", false)
+        
+        if (isScreenshotEnabled) {
+            triggerManager.addTrigger(ScreenshotTrigger())
+            Log.d("MouthOverlayService", "Screenshot trigger enabled from settings")
+        } else {
+            Log.d("MouthOverlayService", "Screenshot trigger disabled from settings")
+        }
         
         updateScreenSize()
         showOverlay()

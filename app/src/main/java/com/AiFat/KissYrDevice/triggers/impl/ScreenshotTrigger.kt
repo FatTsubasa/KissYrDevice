@@ -14,19 +14,22 @@ class ScreenshotTrigger : FaceTrigger {
     override val gesture: FaceGesture = FaceGesture.PUCKER
     override val name: String = "Screenshot"
 
-    private var lastTriggerTime = 0L
-    private val cooldown = 2000L // 2 seconds cooldown
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    companion object {
+        // 使用全局静态变量确保冷却时间不受对象重建影响
+        private var lastTriggerTime = 0L
+        private const val COOLDOWN = 2000L // 2 seconds cooldown
+    }
 
     override fun onTrigger(context: Context) {
         val currentTime = System.currentTimeMillis()
-        if (currentTime - lastTriggerTime > cooldown) {
+        if (currentTime - lastTriggerTime > COOLDOWN) {
             lastTriggerTime = currentTime
             Log.d("ScreenshotTrigger", "Triggering screenshot action via Broadcast")
             
             // Send broadcast to ScreenshotService
             val intent = Intent(ScreenshotService.ACTION_TAKE_SCREENSHOT).apply {
-                // Important: If targeting API 34+, you might need to set the package
                 setPackage(context.packageName)
             }
             context.sendBroadcast(intent)

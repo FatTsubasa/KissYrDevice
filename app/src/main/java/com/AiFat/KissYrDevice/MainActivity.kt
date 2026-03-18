@@ -98,6 +98,8 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun MainScreen(cameraExecutor: ExecutorService, isServiceRunning: MutableState<Boolean>) {
     val context = LocalContext.current
+    val sharedPrefs = remember { context.getSharedPreferences("KissYrSettings", Context.MODE_PRIVATE) }
+    
     var hasCameraPermission by remember {
         mutableStateOf(
             ContextCompat.checkSelfPermission(
@@ -159,7 +161,10 @@ fun MainScreen(cameraExecutor: ExecutorService, isServiceRunning: MutableState<B
             if (!isServiceRunning.value) {
                 FaceDetectionContent(
                     modifier = Modifier.padding(innerPadding),
-                    cameraExecutor = cameraExecutor
+                    cameraExecutor = cameraExecutor,
+                    onScreenshotStatusChanged = { isEnabled ->
+                        sharedPrefs.edit().putBoolean("screenshot_enabled", isEnabled).apply()
+                    }
                 )
             } else {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -175,13 +180,22 @@ fun MainScreen(cameraExecutor: ExecutorService, isServiceRunning: MutableState<B
 }
 
 @Composable
-fun FaceDetectionContent(modifier: Modifier = Modifier, cameraExecutor: ExecutorService) {
+fun FaceDetectionContent(
+    modifier: Modifier = Modifier, 
+    cameraExecutor: ExecutorService,
+    onScreenshotStatusChanged: (Boolean) -> Unit
+) {
     var mouthData by remember { mutableStateOf<MouthData?>(null) }
     var previewSize by remember { mutableStateOf(Size(0, 0)) }
     
     val context = LocalContext.current
+    val sharedPrefs = remember { context.getSharedPreferences("KissYrSettings", Context.MODE_PRIVATE) }
     val triggerManager = remember { TriggerManager(context) }
-    var isScreenshotEnabled by remember { mutableStateOf(false) }
+    
+    // Initialize state from SharedPreferences
+    var isScreenshotEnabled by remember { 
+        mutableStateOf(sharedPrefs.getBoolean("screenshot_enabled", false)) 
+    }
 
     LaunchedEffect(isScreenshotEnabled) {
         if (isScreenshotEnabled) {
@@ -189,6 +203,7 @@ fun FaceDetectionContent(modifier: Modifier = Modifier, cameraExecutor: Executor
         } else {
             triggerManager.removeTrigger(FaceGesture.PUCKER, "Screenshot")
         }
+        onScreenshotStatusChanged(isScreenshotEnabled)
     }
 
     Box(modifier = modifier.fillMaxSize()) {
@@ -283,6 +298,7 @@ class MediaPipeMouthAnalyzer(
 
     private var faceLandmarker: FaceLandmarker? = null
     private var isPuckeringLastFrame = false
+    private var puckerFrameCount = 0
 
     init {
         try {
@@ -322,24 +338,34 @@ class MediaPipeMouthAnalyzer(
             val landmarks = result.faceLandmarks()[0]
             
             // Extract blendshapes for puckering detection
-            var isPuckering = false
+            var isPuckeringThisFrame = false
             val blendshapes = result.faceBlendshapes()
             if (blendshapes.isPresent) {
                 val shapesList = blendshapes.get()
                 if (shapesList.isNotEmpty()) {
                     for (shape in shapesList[0]) {
-                        if (shape.categoryName() == "mouthPucker" && shape.score() > 0.5f) {
-                            isPuckering = true
+                        // 提高阈值，只有当深度撅嘴（分值 > 0.9）时才判定为 Pucker
+                        if (shape.categoryName() == "mouthPucker" && shape.score() > 0.9f) {
+                            isPuckeringThisFrame = true
                             break
                         }
                     }
                 }
             }
             
-            if (isPuckering && !isPuckeringLastFrame) {
+            if (isPuckeringThisFrame) {
+                puckerFrameCount++
+            } else {
+                puckerFrameCount = 0
+            }
+
+            // 只有当持续 3 帧以上判定为撅嘴，且上一逻辑帧未判定为撅嘴时，才触发动作
+            val isPuckeringValidated = puckerFrameCount >= 3
+            
+            if (isPuckeringValidated && !isPuckeringLastFrame) {
                 onGestureDetected(FaceGesture.PUCKER)
             }
-            isPuckeringLastFrame = isPuckering
+            isPuckeringLastFrame = isPuckeringValidated
             
             val upperLipTopIndices = listOf(61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291)
             val upperLipBottomIndices = listOf(78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 308)
@@ -357,7 +383,7 @@ class MediaPipeMouthAnalyzer(
                 lowerLipTop = mapIndices(lowerLipTopIndices),
                 lowerLipBottom = mapIndices(lowerLipBottomIndices),
                 rotation = lastRotation,
-                isPuckering = isPuckering
+                isPuckering = isPuckeringValidated
             ))
         }
     }
