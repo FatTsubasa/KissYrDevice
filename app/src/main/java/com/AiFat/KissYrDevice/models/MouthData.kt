@@ -8,5 +8,6 @@ data class MouthData(
     val lowerLipTop: List<Offset>,
     val lowerLipBottom: List<Offset>,
     val rotation: Int,
-    val isPuckering: Boolean = false
+    val isPuckering: Boolean = false,
+    val faceWidth: Float = 0f
 )

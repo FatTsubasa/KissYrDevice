@@ -6,6 +6,9 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Paint
+import android.graphics.Path as NativePath
+import android.graphics.RectF
 import android.graphics.drawable.Animatable
 import android.graphics.drawable.Drawable
 import android.net.Uri
@@ -54,6 +57,9 @@ import com.google.mediapipe.tasks.vision.facelandmarker.FaceLandmarker
 import com.google.mediapipe.tasks.vision.facelandmarker.FaceLandmarkerResult
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import kotlin.math.atan2
+import kotlin.math.pow
+import kotlin.math.sqrt
 
 class MainActivity : ComponentActivity() {
     private lateinit var cameraExecutor: ExecutorService
@@ -128,9 +134,7 @@ fun MainScreen(cameraExecutor: ExecutorService, isServiceRunning: MutableState<B
             if (hasCameraPermission) {
                 FloatingActionButton(
                     onClick = {
-                        // Check for accessibility permission first
                         if (!PermissionUtils.isAccessibilityServiceEnabled(context, ScreenshotService::class.java)) {
-                            // Jump directly to accessibility settings
                             val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
                             context.startActivity(intent)
                             Toast.makeText(context, "请在「已安装的应用」或「下载的服务」中开启 KissYrDevice 截屏助手", Toast.LENGTH_LONG).show()
@@ -157,7 +161,6 @@ fun MainScreen(cameraExecutor: ExecutorService, isServiceRunning: MutableState<B
         }
     ) { innerPadding ->
         if (hasCameraPermission) {
-            // Only show camera content if service is NOT running
             if (!isServiceRunning.value) {
                 FaceDetectionContent(
                     modifier = Modifier.padding(innerPadding),
@@ -192,7 +195,6 @@ fun FaceDetectionContent(
     val sharedPrefs = remember { context.getSharedPreferences("KissYrSettings", Context.MODE_PRIVATE) }
     val triggerManager = remember { TriggerManager(context) }
     
-    // Initialize state from SharedPreferences
     var isScreenshotEnabled by remember { 
         mutableStateOf(sharedPrefs.getBoolean("screenshot_enabled", false)) 
     }
@@ -217,7 +219,6 @@ fun FaceDetectionContent(
         )
         MouthOverlay(mouthData, previewSize)
 
-        // UI for triggering screenshot
         Row(
             modifier = Modifier
                 .align(Alignment.BottomStart)
@@ -308,7 +309,7 @@ class MediaPipeMouthAnalyzer(
             val options = FaceLandmarker.FaceLandmarkerOptions.builder()
                 .setBaseOptions(baseOptions)
                 .setRunningMode(RunningMode.LIVE_STREAM)
-                .setOutputFaceBlendshapes(true) // Required for mouthPucker
+                .setOutputFaceBlendshapes(true)
                 .setResultListener { result, _ ->
                     processResult(result)
                 }
@@ -337,14 +338,12 @@ class MediaPipeMouthAnalyzer(
         if (result.faceLandmarks().isNotEmpty()) {
             val landmarks = result.faceLandmarks()[0]
             
-            // Extract blendshapes for puckering detection
             var isPuckeringThisFrame = false
             val blendshapes = result.faceBlendshapes()
             if (blendshapes.isPresent) {
                 val shapesList = blendshapes.get()
                 if (shapesList.isNotEmpty()) {
                     for (shape in shapesList[0]) {
-                        // 提高阈值，只有当深度撅嘴（分值 > 0.9）时才判定为 Pucker
                         if (shape.categoryName() == "mouthPucker" && shape.score() > 0.9f) {
                             isPuckeringThisFrame = true
                             break
@@ -359,7 +358,6 @@ class MediaPipeMouthAnalyzer(
                 puckerFrameCount = 0
             }
 
-            // 只有当持续 3 帧以上判定为撅嘴，且上一逻辑帧未判定为撅嘴时，才触发动作
             val isPuckeringValidated = puckerFrameCount >= 3
             
             if (isPuckeringValidated && !isPuckeringLastFrame) {
@@ -377,13 +375,18 @@ class MediaPipeMouthAnalyzer(
                 Offset(lm.x(), lm.y())
             }
 
+            val leftBoundary = landmarks[234]
+            val rightBoundary = landmarks[454]
+            val fWidth = sqrt((rightBoundary.x() - leftBoundary.x()).pow(2) + (rightBoundary.y() - leftBoundary.y()).pow(2))
+
             onMouthDataUpdate(MouthData(
                 upperLipTop = mapIndices(upperLipTopIndices),
                 upperLipBottom = mapIndices(upperLipBottomIndices),
                 lowerLipTop = mapIndices(lowerLipTopIndices),
                 lowerLipBottom = mapIndices(lowerLipBottomIndices),
                 rotation = lastRotation,
-                isPuckering = isPuckeringValidated
+                isPuckering = isPuckeringValidated,
+                faceWidth = fWidth
             ))
         }
     }
@@ -392,7 +395,7 @@ class MediaPipeMouthAnalyzer(
 @Composable
 fun MouthOverlay(mouthData: MouthData?, previewSize: Size) {
     val context = LocalContext.current
-    val showDetect = 1
+    val showDetect = 1 // 开启检测点显示
 
     fun getCroppedBitmap(resId: Int): Bitmap {
         val original = BitmapFactory.decodeResource(context.resources, resId)
@@ -423,7 +426,6 @@ fun MouthOverlay(mouthData: MouthData?, previewSize: Size) {
     val mouthUp = remember { getCroppedBitmap(R.drawable.mouth01_up) }
     val mouthDown = remember { getCroppedBitmap(R.drawable.mouth01_down) }
     
-    // Heart animation drawable
     val heartDrawable = remember {
         ContextCompat.getDrawable(context, R.drawable.heart)?.apply {
             callback = object : Drawable.Callback {
@@ -434,7 +436,6 @@ fun MouthOverlay(mouthData: MouthData?, previewSize: Size) {
         }
     }
 
-    // Manual frame invalidation for animated WebP
     var lastFrameTime by remember { mutableLongStateOf(0L) }
     LaunchedEffect(mouthData?.isPuckering) {
         if (mouthData?.isPuckering == true) {
@@ -463,20 +464,35 @@ fun MouthOverlay(mouthData: MouthData?, previewSize: Size) {
             }
 
             if (showDetect == 1) {
-                fun List<Offset>.drawLipPoints(color: Color) {
+                fun List<Offset>.drawLipPoints(color: Color, size: Float = 5f) {
                     for (point in this) {
                         val m = mapPoint(point)
-                        drawRect(color = color, topLeft = Offset(m.x - 2.5f, m.y - 2.5f), size = androidx.compose.ui.geometry.Size(5f, 5f))
+                        drawRect(color = color, topLeft = Offset(m.x - size/2, m.y - size/2), size = androidx.compose.ui.geometry.Size(size, size))
                     }
                 }
+                // 绘制嘴唇检测点
                 mouthData.upperLipTop.drawLipPoints(Color.Red)
-                mouthData.upperLipBottom.drawLipPoints(Color.Red)
-                mouthData.lowerLipTop.drawLipPoints(Color.Blue)
                 mouthData.lowerLipBottom.drawLipPoints(Color.Blue)
+                
+                // 绘制【牙齿区域】检测点 (上唇底缘和下唇顶缘)
+                mouthData.upperLipBottom.drawLipPoints(Color.Yellow, 8f) // 黄色：上牙基准
+                mouthData.lowerLipTop.drawLipPoints(Color.Cyan, 8f)   // 青色：下牙基准
+                
+                // 绘制牙齿计算用的中点锚点
+                val upperAnchor = mapPoint(interpolate(mouthData.upperLipBottom, 0.5f))
+                val lowerAnchor = mapPoint(interpolate(mouthData.lowerLipTop, 0.5f))
+                drawCircle(Color.White, radius = 10f, center = upperAnchor)
+                drawCircle(Color.White, radius = 10f, center = lowerAnchor)
+                
+                // 绘制预防交叉的接触分界线
+                val midY = (upperAnchor.y + lowerAnchor.y) / 2f
+                drawLine(Color.Green, start = Offset(0f, midY), end = Offset(size.width, midY), strokeWidth = 2f)
             }
 
             drawIntoCanvas { canvas ->
                 val meshW = 20
+                // (此处由于被 revert，暂时移除了牙齿绘制逻辑，仅显示 Mesh 嘴唇和检测点)
+                
                 val upVerts = FloatArray((meshW + 1) * 2 * 2)
                 for (i in 0..meshW) {
                     val f = i.toFloat() / meshW
@@ -501,13 +517,11 @@ fun MouthOverlay(mouthData: MouthData?, previewSize: Size) {
                     val mappedPoints = mouthData.upperLipTop.map { mapPoint(it) }
                     val rightPoint = mappedPoints.maxByOrNull { it.x } ?: Offset.Zero
                     val topPoint = mappedPoints.minByOrNull { it.y } ?: Offset.Zero
-                    
                     val heartSize = 300
                     val heartX = rightPoint.x.toInt()
                     val heartY = (topPoint.y - heartSize).toInt()
-                    
                     heartDrawable.setBounds(heartX, heartY, heartX + heartSize, heartY + heartSize)
-                    val dummy = lastFrameTime 
+                    val dummy = lastFrameTime
                     heartDrawable.draw(canvas.nativeCanvas)
                 }
             }
