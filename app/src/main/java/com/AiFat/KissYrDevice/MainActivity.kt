@@ -395,7 +395,7 @@ class MediaPipeMouthAnalyzer(
 @Composable
 fun MouthOverlay(mouthData: MouthData?, previewSize: Size) {
     val context = LocalContext.current
-    val showDetect = 1 // 启用全索引点显示模式
+    val showDetect = 1 // 启用全索引点调试
 
     fun getCroppedBitmap(resId: Int): Bitmap {
         val original = BitmapFactory.decodeResource(context.resources, resId)
@@ -425,6 +425,8 @@ fun MouthOverlay(mouthData: MouthData?, previewSize: Size) {
 
     val mouthUp = remember { getCroppedBitmap(R.drawable.mouth01_up) }
     val mouthDown = remember { getCroppedBitmap(R.drawable.mouth01_down) }
+    val teethUpImg = remember { getCroppedBitmap(R.drawable.teeth_up) }
+    val teethDownImg = remember { getCroppedBitmap(R.drawable.teeth_down) }
     
     val heartDrawable = remember {
         ContextCompat.getDrawable(context, R.drawable.heart)?.apply {
@@ -463,32 +465,63 @@ fun MouthOverlay(mouthData: MouthData?, previewSize: Size) {
                 return Offset(x * previewSize.width, y * previewSize.height)
             }
 
-            if (showDetect == 1) {
-                val uOuterIds = listOf(61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291)
-                val uInnerIds = listOf(78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 308)
-                val lInnerIds = listOf(78, 95, 88, 178, 87, 14, 317, 402, 318, 324, 308)
-                val lOuterIds = listOf(61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291)
-
-                drawIntoCanvas { canvas ->
-                    val tp = Paint().apply { textSize = 18f; textAlign = Paint.Align.CENTER }
-                    
-                    fun drawSet(ids: List<Int>, points: List<Offset>, color: Color) {
-                        tp.color = color.hashCode()
-                        for (i in ids.indices) {
-                            val m = mapPoint(points[i])
-                            drawCircle(color, radius = 4f, center = m)
-                            canvas.nativeCanvas.drawText(ids[i].toString(), m.x, m.y - 10f, tp)
-                        }
-                    }
-                    drawSet(uOuterIds, mouthData.upperLipTop, Color.Red)
-                    drawSet(uInnerIds, mouthData.upperLipBottom, Color.Yellow)
-                    drawSet(lInnerIds, mouthData.lowerLipTop, Color.Cyan)
-                    drawSet(lOuterIds, mouthData.lowerLipBottom, Color.Blue)
-                }
-            }
-
             drawIntoCanvas { canvas ->
                 val meshW = 20
+                
+                // --- 1. Global Safe Clip (Outer Boundary) ---
+                val outerPath = NativePath()
+                val pStart = mapPoint(interpolate(mouthData.upperLipTop, 0f))
+                outerPath.moveTo(pStart.x, pStart.y)
+                for (i in 1..meshW) outerPath.lineTo(mapPoint(interpolate(mouthData.upperLipTop, i.toFloat()/meshW)).x, mapPoint(interpolate(mouthData.upperLipTop, i.toFloat()/meshW)).y)
+                for (i in meshW downTo 0) outerPath.lineTo(mapPoint(interpolate(mouthData.lowerLipBottom, i.toFloat()/meshW)).x, mapPoint(interpolate(mouthData.lowerLipBottom, i.toFloat()/meshW)).y)
+                outerPath.close()
+
+                canvas.nativeCanvas.save()
+                canvas.nativeCanvas.clipPath(outerPath)
+
+                val faceW = mouthData.faceWidth * previewSize.width
+                val teethW = faceW / 3f
+                
+                // --- 2. Calculate BASE Anchors (Horizontal contact line) ---
+                val p78 = mapPoint(mouthData.upperLipBottom.first())
+                val p308 = mapPoint(mouthData.upperLipBottom.last())
+                val upperAnchor = Offset((p78.x + p308.x)/2f, (p78.y + p308.y)/2f)
+                val upperAngle = Math.toDegrees(atan2((p308.y - p78.y).toDouble(), (p308.x - p78.x).toDouble())).toFloat()
+
+                val p95 = mapPoint(mouthData.lowerLipTop[1])
+                val p324 = mapPoint(mouthData.lowerLipTop[9])
+                val lowerAnchor = Offset((p95.x + p324.x)/2f, (p95.y + p324.y)/2f)
+                val lowerAngle = Math.toDegrees(atan2((p324.y - p95.y).toDouble(), (p324.x - p95.x).toDouble())).toFloat()
+
+                fun drawTeethPart(bitmap: Bitmap, anchor: Offset, angle: Float, isUpper: Boolean) {
+                    val scale = teethW / bitmap.width
+                    val targetH = bitmap.height * scale
+                    canvas.nativeCanvas.save()
+                    canvas.nativeCanvas.translate(anchor.x, anchor.y)
+                    // Removed 180 flip to fix orientation. 
+                    // Standard coordinate system: +X right, +Y down.
+                    canvas.nativeCanvas.rotate(angle)
+                    
+                    val left = -teethW / 2f
+                    // ALIGNMENT: 
+                    // isUpper=true: Biting edge (bottom of image) at anchor line, growing UP. 
+                    //              In standard coordinate system, UP is negative Y.
+                    // isUpper=false: Biting edge (top of image) at anchor line, growing DOWN. 
+                    //               In standard coordinate system, DOWN is positive Y.
+                    val dy = if (isUpper) -targetH else 0f
+                    val dest = RectF(left, dy, left + teethW, dy + targetH)
+                    
+                    canvas.nativeCanvas.drawBitmap(bitmap, null, dest, Paint(Paint.FILTER_BITMAP_FLAG))
+                    canvas.nativeCanvas.restore()
+                }
+
+                // DRAW TEETH FIRST (So they are background)
+                drawTeethPart(teethUpImg, upperAnchor, upperAngle, true)
+                drawTeethPart(teethDownImg, lowerAnchor, lowerAngle, false)
+
+                canvas.nativeCanvas.restore()
+
+                // --- 3. Draw Lips Mesh (FOREGROUND, covering teeth gums) ---
                 val upVerts = FloatArray((meshW + 1) * 2 * 2)
                 for (i in 0..meshW) {
                     val f = i.toFloat() / meshW
@@ -517,8 +550,34 @@ fun MouthOverlay(mouthData: MouthData?, previewSize: Size) {
                     val heartX = rightPoint.x.toInt()
                     val heartY = (topPoint.y - heartSize).toInt()
                     heartDrawable.setBounds(heartX, heartY, heartX + heartSize, heartY + heartSize)
-                    val dummy = lastFrameTime
+                    val dummy = lastFrameTime 
                     heartDrawable.draw(canvas.nativeCanvas)
+                }
+            }
+
+            // --- 4. FULL INDEX DEBUG VISUALIZATION ---
+            if (showDetect == 1) {
+                drawIntoCanvas { canvas ->
+                    val tp = Paint().apply { textSize = 18f; textAlign = Paint.Align.CENTER }
+                    fun drawSet(ids: List<Int>, points: List<Offset>, color: Color) {
+                        tp.color = color.hashCode()
+                        for (i in ids.indices) {
+                            val m = mapPoint(points[i])
+                            drawCircle(color, radius = 4f, center = m)
+                            canvas.nativeCanvas.drawText(ids[i].toString(), m.x, m.y - 10f, tp)
+                        }
+                    }
+                    drawSet(listOf(61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291), mouthData.upperLipTop, Color.Red)
+                    drawSet(listOf(78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 308), mouthData.upperLipBottom, Color.Yellow)
+                    drawSet(listOf(78, 95, 88, 178, 87, 14, 317, 402, 318, 324, 308), mouthData.lowerLipTop, Color.Cyan)
+                    drawSet(listOf(61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291), mouthData.lowerLipBottom, Color.Blue)
+                    
+                    val p78 = mapPoint(mouthData.upperLipBottom.first())
+                    val p308 = mapPoint(mouthData.upperLipBottom.last())
+                    drawCircle(Color.White, radius = 12f, center = Offset((p78.x + p308.x)/2f, (p78.y + p308.y)/2f))
+                    val p95 = mapPoint(mouthData.lowerLipTop[1])
+                    val p324 = mapPoint(mouthData.lowerLipTop[9])
+                    drawCircle(Color.White, radius = 12f, center = Offset((p95.x + p324.x)/2f, (p95.y + p324.y)/2f))
                 }
             }
         }
