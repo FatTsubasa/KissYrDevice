@@ -309,7 +309,7 @@ class MediaPipeMouthAnalyzer(
             val options = FaceLandmarker.FaceLandmarkerOptions.builder()
                 .setBaseOptions(baseOptions)
                 .setRunningMode(RunningMode.LIVE_STREAM)
-                .setOutputFaceBlendshapes(true)
+                .setOutputFaceBlendshapes(true) // Required for mouthPucker
                 .setResultListener { result, _ ->
                     processResult(result)
                 }
@@ -395,7 +395,7 @@ class MediaPipeMouthAnalyzer(
 @Composable
 fun MouthOverlay(mouthData: MouthData?, previewSize: Size) {
     val context = LocalContext.current
-    val showDetect = 1 // 开启检测点显示
+    val showDetect = 1 // 启用全索引点显示模式
 
     fun getCroppedBitmap(resId: Int): Bitmap {
         val original = BitmapFactory.decodeResource(context.resources, resId)
@@ -464,35 +464,31 @@ fun MouthOverlay(mouthData: MouthData?, previewSize: Size) {
             }
 
             if (showDetect == 1) {
-                fun List<Offset>.drawLipPoints(color: Color, size: Float = 5f) {
-                    for (point in this) {
-                        val m = mapPoint(point)
-                        drawRect(color = color, topLeft = Offset(m.x - size/2, m.y - size/2), size = androidx.compose.ui.geometry.Size(size, size))
+                val uOuterIds = listOf(61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291)
+                val uInnerIds = listOf(78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 308)
+                val lInnerIds = listOf(78, 95, 88, 178, 87, 14, 317, 402, 318, 324, 308)
+                val lOuterIds = listOf(61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291)
+
+                drawIntoCanvas { canvas ->
+                    val tp = Paint().apply { textSize = 18f; textAlign = Paint.Align.CENTER }
+                    
+                    fun drawSet(ids: List<Int>, points: List<Offset>, color: Color) {
+                        tp.color = color.hashCode()
+                        for (i in ids.indices) {
+                            val m = mapPoint(points[i])
+                            drawCircle(color, radius = 4f, center = m)
+                            canvas.nativeCanvas.drawText(ids[i].toString(), m.x, m.y - 10f, tp)
+                        }
                     }
+                    drawSet(uOuterIds, mouthData.upperLipTop, Color.Red)
+                    drawSet(uInnerIds, mouthData.upperLipBottom, Color.Yellow)
+                    drawSet(lInnerIds, mouthData.lowerLipTop, Color.Cyan)
+                    drawSet(lOuterIds, mouthData.lowerLipBottom, Color.Blue)
                 }
-                // 绘制嘴唇检测点
-                mouthData.upperLipTop.drawLipPoints(Color.Red)
-                mouthData.lowerLipBottom.drawLipPoints(Color.Blue)
-                
-                // 绘制【牙齿区域】检测点 (上唇底缘和下唇顶缘)
-                mouthData.upperLipBottom.drawLipPoints(Color.Yellow, 8f) // 黄色：上牙基准
-                mouthData.lowerLipTop.drawLipPoints(Color.Cyan, 8f)   // 青色：下牙基准
-                
-                // 绘制牙齿计算用的中点锚点
-                val upperAnchor = mapPoint(interpolate(mouthData.upperLipBottom, 0.5f))
-                val lowerAnchor = mapPoint(interpolate(mouthData.lowerLipTop, 0.5f))
-                drawCircle(Color.White, radius = 10f, center = upperAnchor)
-                drawCircle(Color.White, radius = 10f, center = lowerAnchor)
-                
-                // 绘制预防交叉的接触分界线
-                val midY = (upperAnchor.y + lowerAnchor.y) / 2f
-                drawLine(Color.Green, start = Offset(0f, midY), end = Offset(size.width, midY), strokeWidth = 2f)
             }
 
             drawIntoCanvas { canvas ->
                 val meshW = 20
-                // (此处由于被 revert，暂时移除了牙齿绘制逻辑，仅显示 Mesh 嘴唇和检测点)
-                
                 val upVerts = FloatArray((meshW + 1) * 2 * 2)
                 for (i in 0..meshW) {
                     val f = i.toFloat() / meshW
