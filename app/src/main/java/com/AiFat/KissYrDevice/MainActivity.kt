@@ -395,7 +395,7 @@ class MediaPipeMouthAnalyzer(
 @Composable
 fun MouthOverlay(mouthData: MouthData?, previewSize: Size) {
     val context = LocalContext.current
-    val showDetect = 1 // 启用全索引点调试
+    val showDetect = 0 // 启用全索引点调试
 
     fun getCroppedBitmap(resId: Int): Bitmap {
         val original = BitmapFactory.decodeResource(context.resources, resId)
@@ -486,33 +486,44 @@ fun MouthOverlay(mouthData: MouthData?, previewSize: Size) {
                 val p78 = mapPoint(mouthData.upperLipBottom.first())
                 val p308 = mapPoint(mouthData.upperLipBottom.last())
                 val upperAnchor = Offset((p78.x + p308.x)/2f, (p78.y + p308.y)/2f)
-                val upperAngle = Math.toDegrees(atan2((p308.y - p78.y).toDouble(), (p308.x - p78.x).toDouble())).toFloat()
+                val upperAngle = Math.toDegrees(
+                    atan2((p78.y - p308.y).toDouble(), (p78.x - p308.x).toDouble())
+                ).toFloat()
 
                 val p95 = mapPoint(mouthData.lowerLipTop[1])
                 val p324 = mapPoint(mouthData.lowerLipTop[9])
                 val lowerAnchor = Offset((p95.x + p324.x)/2f, (p95.y + p324.y)/2f)
-                val lowerAngle = Math.toDegrees(atan2((p324.y - p95.y).toDouble(), (p324.x - p95.x).toDouble())).toFloat()
+                val lowerAngle = Math.toDegrees(
+                    atan2((p95.y - p324.y).toDouble(), (p95.x - p324.x).toDouble())
+                ).toFloat()
 
-                fun drawTeethPart(bitmap: Bitmap, anchor: Offset, angle: Float, isUpper: Boolean) {
+                fun drawTeethPart(
+                    bitmap: Bitmap,
+                    anchor: Offset,
+                    angle: Float,
+                    isUpper: Boolean
+                ) {
                     val scale = teethW / bitmap.width
                     val targetH = bitmap.height * scale
-                    canvas.nativeCanvas.save()
-                    canvas.nativeCanvas.translate(anchor.x, anchor.y)
-                    // Removed 180 flip to fix orientation. 
-                    // Standard coordinate system: +X right, +Y down.
-                    canvas.nativeCanvas.rotate(angle)
-                    
+
+                    val canvasNative = canvas.nativeCanvas
+                    canvasNative.save()
+
+                    canvasNative.translate(anchor.x, anchor.y)
+                    canvasNative.rotate(angle)
+
                     val left = -teethW / 2f
-                    // ALIGNMENT: 
-                    // isUpper=true: Biting edge (bottom of image) at anchor line, growing UP. 
-                    //              In standard coordinate system, UP is negative Y.
-                    // isUpper=false: Biting edge (top of image) at anchor line, growing DOWN. 
-                    //               In standard coordinate system, DOWN is positive Y.
-                    val dy = if (isUpper) -targetH else 0f
-                    val dest = RectF(left, dy, left + teethW, dy + targetH)
-                    
-                    canvas.nativeCanvas.drawBitmap(bitmap, null, dest, Paint(Paint.FILTER_BITMAP_FLAG))
-                    canvas.nativeCanvas.restore()
+
+                    val dest = if (isUpper) {
+                        // 上牙：往“负Y”（法线反方向）
+                        RectF(left, -targetH, left + teethW, 0f)
+                    } else {
+                        // 下牙：往“正Y”（法线方向）
+                        RectF(left, 0f, left + teethW, targetH)
+                    }
+
+                    canvasNative.drawBitmap(bitmap, null, dest, Paint(Paint.FILTER_BITMAP_FLAG))
+                    canvasNative.restore()
                 }
 
                 // DRAW TEETH FIRST (So they are background)
